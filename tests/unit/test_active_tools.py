@@ -169,7 +169,7 @@ def test_process_chunk_uncompressed_write_direct():
     assert str(exc.value) == "Storage chunk shape (2, 8) exceeds permitted output data shape (1, 8)."
 
 
-def test_process_chunk_compressed():
+def test_process_chunk_uncompressed_with_compressor():
     """Test for processing chunk engine for uncompressed data"""
     z = assemble_zarr()
     z = at.make_an_array_instance_active(z)
@@ -177,7 +177,8 @@ def test_process_chunk_compressed():
     cdata = np.ones((1, 2))
     chunk_selection = slice(0, 1, 1)
     out_selection = np.array((0))
-    with pytest.raises(RuntimeError) as exc:
+    raised = f'cdata {cdata} is an ndarray, can not decompress.'
+    with pytest.raises(TypeError) as exc:
         ch = at.as_process_chunk(z,
                                  out,
                                  cdata,
@@ -187,5 +188,4 @@ def test_process_chunk_compressed():
                                  fields=None,
                                  out_selection=out_selection,
                                  partial_read_decode=False)
-    assert str(exc.value) == "error during blosc decompression: -1"
-
+    assert str(exc.value) == raised

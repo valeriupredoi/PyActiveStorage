@@ -310,6 +310,8 @@ def as_process_chunk(
             return
     except ArrayIndexError:
         cdata = cdata.read_full()
+    if self._compressor and isinstance(cdata, np.ndarray):
+        raise TypeError(f"cdata {cdata} is an ndarray, can not decompress.")
     chunk = self._decode_chunk(cdata)
 
     # select data from chunk

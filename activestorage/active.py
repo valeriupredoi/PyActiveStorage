@@ -1,13 +1,48 @@
 import os
 import numpy as np
+import yaml
+
+import activestorage
 
 #FIXME: Consider using h5py throughout, for more generality
 from netCDF4 import Dataset
+from pathlib import Path
 from zarr.indexing import (
     OrthogonalIndexer,
 )
 from activestorage.storage import reduce_chunk
 from activestorage import netcdf_to_zarr as nz
+
+
+def _read_config_file(storage_type):
+    """Read config user file and store settings in a dictionary."""
+    base_path = Path(activestorage.__file__).parent
+    if storage_type == "S3":
+        config_file = base_path / Path("config-s3-storage.yml")
+    elif storage_type == "Posix":
+        config_file = base_path / Path("config-Posix-storage.yml")
+    else:
+        raise ValueError(f"Storage type {storage_type} not known.")
+    # should not need this if conf file is at package-level
+    # if not config_file.exists():
+    #     raise IOError(f'Config file `{config_file}` does not exist.')
+
+    with open(config_file, 'r') as file:
+        cfg = yaml.safe_load(file)
+
+    return cfg
+
+
+def _extract_method(method):
+   """Extract functional method from string. Works like eval but more secure."""
+   if method.split(".")[0] == "np" or method.split(".")[0] == "numpy":
+       try:
+           func = getattr(np, method.split(".")[1])
+           return func
+       except AttributeError:
+           raise AttributeError(f"Method {method} is not a valid Numpy method.")
+   else:
+       raise ValueError(f"Could not recognize method {method} as permitted.")
 
 
 class Active:
@@ -21,20 +56,9 @@ class Active:
     Version 2 will add methods for actual active storage.
 
     """
-    def __new__(cls, *args, **kwargs):
-        """Store reduction methods."""
-        instance = super().__new__(cls)
-        instance._methods = {
-            "min": np.min,
-            "max": np.max,
-            "sum": np.sum,
-            # For the unweighted mean we calulate the sum and divide
-            # by the number of non-missing elements
-            "mean": np.sum,
-        }
-        return instance
-
-    def __init__(self, uri, ncvar, missing_value=None, fill_value=None, valid_min=None, valid_max=None):
+    def __init__(self, uri, ncvar, storage_type="Posix",
+                 missing_value=None, fill_value=None,
+                 valid_min=None, valid_max=None):
         """
         Instantiate with a NetCDF4 dataset and the variable of interest within that file.
         (We need the variable, because we need variable specific metadata from within that
@@ -52,7 +76,18 @@ class Active:
             raise ValueError("Must set a netCDF variable name to slice")
         self.zds = None
 
-        self._version = 1
+        # storage type
+        self.storage_type = storage_type
+
+        # read config file
+        self._config = _read_config_file(self.storage_type)
+
+        # read methods version, components
+        self._version = self._config.get("version", 1)
+        self._methods = self._config.get("methods", None)
+        # should not need this if conf file is at package-level
+        # if not self._methods:
+        #     raise ValueError(f"Configuration dict {self._config} needs a valid methods group.")
         self._components = False
         self._method = None
        
@@ -148,13 +183,14 @@ class Active:
         ==========  ==================================================
 
         """
-        return self._methods.get(self._method)
+        method = self._methods.get(self._method, None)
+        if method:
+            return _extract_method(method)
 
     @method.setter
     def method(self, value):
         if value is not None and value not in self._methods:
             raise ValueError(f"Bad 'method': {value}. Choose from min/max/mean/sum.")
-
         self._method = value
 
     @property

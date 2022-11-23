@@ -1,6 +1,7 @@
 import activestorage
 
 from activestorage import Active as act
+from activestorage.active import _read_config_file as read_conf
 
 
 # test version
@@ -29,3 +30,19 @@ def test_active_class_attrs():
     assert hasattr(act, "components")
     assert hasattr(act, "method")
     assert hasattr(act, "ncvar")
+
+
+# check validity of conf files
+def test_read_config_file():
+    """Test validity of package-level files."""
+    posix_mandatory_keys = ["version", "methods"]
+    s3_mandatory_keys = ["version", "methods"]
+    posix_file = read_conf("Posix")
+    s3_file = read_conf("S3")
+    print(posix_file)
+    print(s3_file)
+    for mandatory_key in posix_mandatory_keys:
+        assert mandatory_key in posix_file
+    for mandatory_key in s3_mandatory_keys:
+        assert mandatory_key in s3_file
+    

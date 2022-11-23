@@ -1,0 +1,6 @@
+version: 1
+methods:
+  min: np.min
+  max: np.max
+  sum: np.sum
+  mean: np.sum

@@ -53,7 +53,9 @@ def reduce_chunk(session, server, source, bucket, object,
     """
 
     request_data = build_request_data(source, bucket, object, offset, size, compression, filters, missing, dtype, shape, order, chunk_selection)
-    print("Reductionist request data dictionary:", request_data)
+    # This is very useful to see what is being sent to Reductionist
+    # print("Reductionist request data dictionary:", request_data)
+    # print("Chunk size", request_data["size"])
     api_operation = "sum" if operation == "mean" else operation or "select"
     url = f'{server}/v1/{api_operation}/'
     response = request(session, url, request_data)

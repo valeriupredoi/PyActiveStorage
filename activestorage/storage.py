@@ -49,7 +49,7 @@ def reduce_chunk(rfile,
         if tmp.size:
             return method(tmp), tmp.size
         else:
-            return tmp, None
+            return tmp, 0
     else:
         return tmp, None
 

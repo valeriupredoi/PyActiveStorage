@@ -60,7 +60,7 @@ def test_reduced_chunk_fully_masked_data_fill():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_missing():
@@ -79,7 +79,7 @@ def test_reduced_chunk_fully_masked_data_missing():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_vmin():
@@ -98,7 +98,7 @@ def test_reduced_chunk_fully_masked_data_vmin():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_vmax():
@@ -117,7 +117,7 @@ def test_reduced_chunk_fully_masked_data_vmax():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_zero_data():

@@ -58,7 +58,10 @@ jobs:
           python -V
           which python
           pip install -e .
-      - name: Run one single test
+      - name: Run gold test
+        run: |
+          \time pytest tests/test_compression_remote_reductionist.py::test_compression_and_filters_cmip6_forced_s3_from_local_bigger_file_v1
+      - name: Run remote reductionist tests
         run: |
           pytest tests/test_compression_remote_reductionist.py
       - name: Upload HTML report artifact

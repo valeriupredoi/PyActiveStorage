@@ -64,6 +64,8 @@ jobs:
           which python
           pip install -e .
       - name: Run tests
+        # run tests on one process to catch eventual SegFaults
+        # no SegFaults happen with n procs > 1
         run: |
           pytest
       - name: Run S3 exploratory tests

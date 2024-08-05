@@ -18,7 +18,10 @@ from activestorage import reductionist
 from activestorage.storage import reduce_chunk
 from activestorage import netcdf_to_zarr as nz
 
+import time
+import zarr
 
+t1 = time.time()
 @contextlib.contextmanager
 def load_from_s3(uri, storage_options=None):
     """
@@ -78,7 +81,7 @@ class Active:
         uri,
         ncvar,
         storage_type=None,
-        max_threads=100,
+        max_threads=150,
         storage_options=None,
         active_storage_url=None
     ):
@@ -259,19 +262,25 @@ class Active:
         """ 
         The objective is to use kerchunk to read the slices ourselves. 
         """
+        tx = time.time()
         # FIXME: Order of calls is hardcoded'
         if self.zds is None:
             print(f"Kerchunking file {self.uri} with variable "
                   f"{self.ncvar} for storage type {self.storage_type}")
+            tx1 = time.time()
             ds, zarray, zattrs = nz.load_netcdf_zarr_generic(
                 self.uri,
                 self.ncvar,
                 self.storage_type,
                 self.storage_options,
             )
+            ty1 = time.time()
+            print("Time to load to netCDF from Zarr", ty1 - tx1)
             # The following is a hangove from exploration
             # and is needed if using the original doing it ourselves
             # self.zds = make_an_array_instance_active(ds)
+            if isinstance(ds, zarr.hierarchy.Group):
+                ds = ds[self.ncvar]
             self.zds = ds
 
             # Retain attributes and other information
@@ -284,7 +293,9 @@ class Active:
             # FIXME: We do not get the correct byte order on the Zarr
             # Array's dtype when using S3, so capture it here.
             self._dtype = np.dtype(zarray['dtype'])
-            
+
+        ty = time.time()
+        print("Time of _via_kerchunk()", ty - tx)
         return self._get_selection(index)
 
     def _get_selection(self, *args):
@@ -458,13 +469,17 @@ class Active:
         Note the need to use counts for some methods
 
         """
+        t1c = time.time()
         coord = '.'.join([str(c) for c in chunk_coords])
         key = f"{self.ncvar}/{coord}"
-        rfile, offset, size = tuple(fsref[key])
+        try:
+            rfile, offset, size = tuple(fsref[self.ncvar + " /" + key])
+        except KeyError:
+            rfile, offset, size = tuple(fsref[key])
 
         # S3: pass in pre-configured storage options (credentials)
         if self.storage_type == "s3":
-            print("S3 rfile is:", rfile)
+            # print("S3 rfile is:", rfile)
             parsed_url = urllib.parse.urlparse(rfile)
             bucket = parsed_url.netloc
             object = parsed_url.path
@@ -476,8 +491,8 @@ class Active:
             if bucket == "":
                 bucket = os.path.dirname(object)
                 object = os.path.basename(object)
-            print("S3 bucket:", bucket)
-            print("S3 file:", object)
+            # print("S3 bucket:", bucket)
+            # print("S3 file:", object)
             if self.storage_options is None:
                 tmp, count = reductionist.reduce_chunk(session,
                                                        S3_ACTIVE_STORAGE_URL,
@@ -491,9 +506,9 @@ class Active:
                                                        operation=self._method)
             else:
                 # special case for "anon=True" buckets that work only with e.g.
-                # fs = s3fs.S3FileSystem(anon=True, client_kwargs={'endpoint_url': S3_URL})
+                # "fs = s3fs.S3FileSystem(anon=True, client_kwargs={'endpoint_url': S3_URL})"
                 # where file uri = bucketX/fileY.mc
-                print("S3 Storage options to Reductionist:", self.storage_options)
+                # print("S3 Storage options:", self.storage_options)
                 if self.storage_options.get("anon", None) == True:
                     bucket = os.path.dirname(parsed_url.path)  # bucketX
                     object = os.path.basename(parsed_url.path)  # fileY
@@ -517,7 +532,8 @@ class Active:
                                       missing, self.zds._dtype,
                                       self.zds._chunks, self.zds._order,
                                       chunk_selection, method=self.method)
-
+        t2c = time.time()
+        print("Chunk processing time via _process_chunk()", t2c - t1c)
         if self.method is not None:
             return tmp, count
         else:

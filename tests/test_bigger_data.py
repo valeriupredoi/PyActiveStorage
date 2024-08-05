@@ -9,6 +9,7 @@ import s3fs
 
 from activestorage.active import Active
 from activestorage.config import *
+from pyfive.core import InvalidHDF5File as InvalidHDF5Err
 
 import utils
 
@@ -162,28 +163,17 @@ def test_native_emac_model_fails(test_data_path):
     """
     ncfile = str(test_data_path / "emac.nc")
     uri = utils.write_to_storage(ncfile)
-    # Use local file to avoid h5py
-    active = Active(ncfile, "aps_ave")
-    active._version = 0
-    d = active[4:5, 1:2]
-    if len(d):
-        mean_result = np.mean(d)
-    else:
-        # as it happens it is is possible for a slice to be
-        # all missing, so for the purpose of this test we 
-        # ignore it, but the general case should not.
-        pass
 
     if USE_S3:
         active = Active(uri, "aps_ave", utils.get_storage_type())
-        with pytest.raises(OSError):
+        with pytest.raises(InvalidHDF5Err):
             active[...]
     else:
         active = Active(uri, "aps_ave")
         active._version = 2
         active.method = "mean"
         active.components = True
-        with pytest.raises(OSError):
+        with pytest.raises(InvalidHDF5Err):
             result2 = active[4:5, 1:2]
 
 

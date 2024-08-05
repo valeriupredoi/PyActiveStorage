@@ -58,10 +58,14 @@ def test_compression_and_filters_cmip6_data(storage_options, active_storage_url)
         test_file_uri = os.path.join(S3_BUCKET, ofile)
     else:
         test_file_uri = test_file
+    print("Test file and storage options", test_file, storage_options)
+    if not utils.get_storage_type():
+        storage_options = None
+        active_storage_url = None
     active = Active(test_file_uri, 'tas', utils.get_storage_type(),
                     storage_options=storage_options,
                     active_storage_url=active_storage_url)
-    active._version = 1
+    active._version = 2
     active._method = "min"
 
     if USE_S3:
@@ -104,13 +108,8 @@ def test_compression_and_filters_cmip6_forced_s3_from_local(storage_options, act
     active._version = 1
     active._method = "min"
 
-    # for now anon=True S3 buckets are not supported by Reductionist
-    with pytest.raises(RedErr) as rederr:
-        result = active[0:2,4:6,7:9]
-    access_denied_err = 'code: \\"AccessDenied\\"'
-    assert access_denied_err in str(rederr.value)
-    # assert nc_min == result
-    # assert result == 239.25946044921875
+    result = active[0:2,4:6,7:9]
+    assert result == 239.25946044921875
 
 
 # CMIP6_test.nc keeps being unavailable due to BNL bucket unavailable

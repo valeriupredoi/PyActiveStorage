@@ -1,25 +1,19 @@
 import concurrent.futures
-import contextlib
 import os
 import numpy as np
 import pathlib
 import urllib
+import pyfive
+import time
 
-import h5netcdf
 import s3fs
 
-#FIXME: Consider using h5py throughout, for more generality
-from netCDF4 import Dataset
-from zarr.indexing import (
-    OrthogonalIndexer,
-)
 from activestorage.config import *
 from activestorage import reductionist
-from activestorage.storage import reduce_chunk
-from activestorage import netcdf_to_zarr as nz
+from activestorage.storage import reduce_chunk, reduce_opens3_chunk
+from activestorage.hdf2numcodec import decode_filters
 
 
-@contextlib.contextmanager
 def load_from_s3(uri, storage_options=None):
     """
     Load a netCDF4-like object from S3.
@@ -43,11 +37,63 @@ def load_from_s3(uri, storage_options=None):
                                client_kwargs={'endpoint_url': S3_URL})  # eg "http://localhost:9000" for Minio
     else:
         fs = s3fs.S3FileSystem(**storage_options)  # use passed-in dictionary
-    with fs.open(uri, 'rb') as s3file:
-        ds = h5netcdf.File(s3file, 'r', invalid_netcdf=True)
-        print(f"Dataset loaded from S3 via h5netcdf: {ds}")
-        yield ds
+   
+    t1=time.time()   
+    s3file = fs.open(uri, 'rb')
+    t2=time.time()
+    ds = pyfive.File(s3file)
+    t3=time.time()
+    print(f"Dataset loaded from S3 with s3fs and Pyfive: {uri} ({t2-t1:.2},{t3-t2:.2})")
+    return ds
 
+def _metricise(method):
+    """ Decorator for class methods loads into metric_data"""
+    def timed(self, *args, **kw):
+        ts = time.time()
+        metric_name=''
+        if '__metric_name' in kw:
+            metric_name = kw['__metric_name']
+            del kw['__metric_name']
+        result = method(self,*args, **kw)
+        te = time.time()
+        if metric_name:
+            self.metric_data[metric_name] = te-ts
+        return result
+    return timed
+
+
+def get_missing_attributes(ds):
+    """" 
+    Load all the missing attributes we need from a netcdf file
+    """
+
+    def hfix(x):
+        '''
+        return item if single element list/array
+        see https://github.com/h5netcdf/h5netcdf/issues/116
+        '''
+        if x is None:
+            return x
+        if not np.isscalar(x) and len(x) == 1:
+            return x[0]
+        return x
+
+    _FillValue = hfix(ds.attrs.get('_FillValue'))
+    missing_value = ds.attrs.get('missing_value')
+    valid_min = hfix(ds.attrs.get('valid_min'))
+    valid_max = hfix(ds.attrs.get('valid_max'))
+    valid_range = hfix(ds.attrs.get('valid_range'))
+    if valid_max is not None or valid_min is not None:
+        if valid_range is not None:
+            raise ValueError(
+                "Invalid combination in the file of valid_min, "
+                "valid_max, valid_range: "
+                f"{valid_min}, {valid_max}, {valid_range}"
+            )
+    elif valid_range is not None:            
+        valid_min, valid_max = valid_range
+    
+    return _FillValue, missing_value, valid_min, valid_max
 
 class Active:
     """ 
@@ -83,7 +129,7 @@ class Active:
         active_storage_url=None
     ):
         """
-        Instantiate with a NetCDF4 dataset and the variable of interest within that file.
+        Instantiate with a NetCDF4 dataset URI and the variable of interest within that file.
         (We need the variable, because we need variable specific metadata from within that
         file, however, if that information is available at instantiation, it can be provided
         using keywords and avoid a metadata read.)
@@ -94,7 +140,7 @@ class Active:
         # Assume NetCDF4 for now
         self.uri = uri
         if self.uri is None:
-            raise ValueError(f"Must use a valid file for uri. Got {self.uri}")
+            raise ValueError(f"Must use a valid file for uri. Got {uri}")
 
         # still allow for a passable storage_type
         # for special cases eg "special-POSIX" ie DDN
@@ -113,61 +159,74 @@ class Active:
         self.ncvar = ncvar
         if self.ncvar is None:
             raise ValueError("Must set a netCDF variable name to slice")
-        self.zds = None
 
         self._version = 1
         self._components = False
         self._method = None
-        self._lock = False
         self._max_threads = max_threads
+        self.missing = None
+        self.ds = None
+        self.metric_data = {}
+        self.data_read = 0
+
+    @_metricise
+    def __load_nc_file(self):
+        """ Get the netcdf file and it's b-tree"""
+        ncvar = self.ncvar
+        # in all cases we need an open netcdf file to get at attributes
+        # we keep it open because we need it's b-tree
+        if self.storage_type is None:
+            nc = pyfive.File(self.uri)
+        elif self.storage_type == "s3":
+            nc = load_from_s3(self.uri, self.storage_options)
+        self.filename = self.uri
+
+        self.ds = nc[ncvar]
+
+    def __get_missing_attributes(self):
+        if self.ds is None:
+            self.__load_nc_file()
+        return get_missing_attributes(self.ds)
 
     def __getitem__(self, index):
         """ 
         Provides support for a standard get item.
+        #FIXME-BNL: Why is the argument index?
         """
-        # In version one this is done by explicitly looping over each chunk in the file
-        # and returning the requested slice ourselves. In version 2, we can pass this
-        # through to the default method.
-        ncvar = self.ncvar
-
-        if self.method is None and self._version == 0:
-            # No active operation
-            lock = self.lock
-            if lock:
-                lock.acquire()
-
-            if self.storage_type is None:
-                nc = Dataset(self.uri)
-                data = nc[ncvar][index]
-                nc.close()
-            elif self.storage_type == "s3":
-                with load_from_s3(self.uri, self.storage_options) as nc:
-                    data = nc[ncvar][index]
-                    data = self._mask_data(data, nc[ncvar])
-
-            if lock:
-                lock.release()
-                
-            return data
+        self.metric_data = {}
+        if self.ds is None:
+            self.__load_nc_file(__metric_name='load nc time')
+            #self.__metricise('Load','__load_nc_file')
         
+        self.missing = self.__get_missing_attributes()
+
+        self.data_read = 0
+        
+        if self.method is None and self._version == 0:
+        
+            # No active operation
+            return self._get_vanilla(index, __metric_name='vanilla_time')
+
         elif self._version == 1:
-            return self._via_kerchunk(index)
+
+            #FIXME: is the difference between version 1 and 2 still honoured?
+            return self._get_selection(index, __metric_name='selection 1 time (s)')
         
         elif self._version  == 2:
-            # No active operation either
-            lock = self.lock
-            if lock:
-                lock.acquire()
 
-            data = self._via_kerchunk(index)
-
-            if lock:
-                lock.release()
-
-            return data
-
+            return self._get_selection(index, __metric_name='selection 2 time (s)')
+          
         else:
             raise ValueError(f'Version {self._version} not supported')
+
+    @_metricise
+    def _get_vanilla(self, index):
+        """ 
+        Get the data without any active operation
+        """
+        data = self.ds[index]    
+        data = self._mask_data(data)
+        return data
 
     @property
     def components(self):
@@ -223,27 +282,6 @@ class Active:
     def ncvar(self, value):
         self._ncvar = value
 
-    @property
-    def lock(self):
-        """Return or set a lock that prevents concurrent file reads when accessing the data locally.
-
-        The lock is either a `threading.Lock` instance, an object with
-        same API and functionality (such as
-        `dask.utils.SerializableLock`), or is `False` if no lock is
-        required.
-
-        To be effective, the same lock instance must be used across
-        all process threads.
-
-        """
-        return self._lock
-
-    @lock.setter
-    def lock(self, value):
-        if not value:
-            value = False
-            
-        self._lock = value
 
     def _get_active(self, method, *args):
         """ 
@@ -254,100 +292,53 @@ class Active:
         an array returned via getitem.
         """
         raise NotImplementedError
-
-    def _via_kerchunk(self, index):
-        """ 
-        The objective is to use kerchunk to read the slices ourselves. 
-        """
-        # FIXME: Order of calls is hardcoded'
-        if self.zds is None:
-            print(f"Kerchunking file {self.uri} with variable "
-                  f"{self.ncvar} for storage type {self.storage_type}")
-            ds, zarray, zattrs = nz.load_netcdf_zarr_generic(
-                self.uri,
-                self.ncvar,
-                self.storage_type,
-                self.storage_options,
-            )
-            # The following is a hangove from exploration
-            # and is needed if using the original doing it ourselves
-            # self.zds = make_an_array_instance_active(ds)
-            self.zds = ds
-
-            # Retain attributes and other information
-            if zarray.get('fill_value') is not None:
-                zattrs['_FillValue'] = zarray['fill_value']
-            
-            self.zarray = zarray
-            self.zattrs = zattrs
-
-            # FIXME: We do not get the correct byte order on the Zarr
-            # Array's dtype when using S3, so capture it here.
-            self._dtype = np.dtype(zarray['dtype'])
-            
-        return self._get_selection(index)
-
+ 
+    @_metricise
     def _get_selection(self, *args):
         """ 
-        First we need to convert the selection into chunk coordinates,
-        steps etc, via the Zarr machinery, then we get everything else we can
-        from zarr and friends and use simple dictionaries and tuples, then
-        we can go to the storage layer with no zarr.
+        At this point we have a Dataset object, but all the important information about
+        how to use it is in the attribute DataoobjectDataset class. Here we gather 
+        metadata from the dataset instance and then continue with the dataobjects instance.
         """
-        compressor = self.zds._compressor
-        filters = self.zds._filters
 
-        # Get missing values
-        _FillValue = self.zattrs.get('_FillValue')
-        missing_value = self.zattrs.get('missing_value')
-        valid_min = self.zattrs.get('valid_min')
-        valid_max = self.zattrs.get('valid_max')
-        valid_range = self.zattrs.get('valid_range')
-        if valid_max is not None or valid_min is not None:
-            if valid_range is not None:
-                raise ValueError(
-                    "Invalid combination in the file of valid_min, "
-                    "valid_max, valid_range: "
-                    f"{valid_min}, {valid_max}, {valid_range}"
-                )
-        elif valid_range is not None:            
-            valid_min, valid_max = valid_range
+        # stick this here for later, to discuss with David
+        keepdims = True
+
+        name = self.ds.name
+        dtype = np.dtype(self.ds.dtype)
+        # hopefully fix pyfive to get a dtype directly
+        array = pyfive.ZarrArrayStub(self.ds.shape, self.ds.chunks)
+        ds = self.ds._dataobjects
         
-        missing = (
-            _FillValue,
-            missing_value,
-            valid_min,
-            valid_max,
-        )
-
-        indexer = OrthogonalIndexer(*args, self.zds)
+        self.metric_data['args'] = args
+        self.metric_data['dataset shape'] = self.ds.shape
+        self.metric_data['dataset chunks'] = self.ds.chunks
+        if ds.filter_pipeline is None:
+            compressor, filters = None, None
+        else:
+            compressor, filters = decode_filters(ds.filter_pipeline , dtype.itemsize, name)
+        
+        indexer = pyfive.OrthogonalIndexer(*args, array)
         out_shape = indexer.shape
-        out_dtype = self.zds._dtype
-        stripped_indexer = [(a, b, c) for a,b,c in indexer]
-        drop_axes = indexer.drop_axes  # not sure what this does and why, yet.
+        #stripped_indexer = [(a, b, c) for a,b,c in indexer]
+        drop_axes = indexer.drop_axes and keepdims
 
-        # yes this next line is bordering on voodoo ...
-        # this returns a nested dictionary with the full file FS reference
-        # ie all the gubbins: chunks, data structure, types, etc
-        # if using zarr<=2.13.3 call with _mutable_mapping ie
-        # fsref = self.zds.chunk_store._mutable_mapping.fs.references 
-        fsref = self.zds.chunk_store.fs.references
+        # we use array._chunks rather than ds.chunks, as the latter is none in the case of
+        # unchunked data, and we need to tell the storage the array dimensions in this case.
+        return self._from_storage(ds, indexer, array._chunks, out_shape, dtype, compressor, filters, drop_axes)
 
-        return self._from_storage(stripped_indexer, drop_axes, out_shape,
-                                  out_dtype, compressor, filters, missing, fsref)
-
-    def _from_storage(self, stripped_indexer, drop_axes, out_shape, out_dtype,
-                      compressor, filters, missing, fsref):
+    def _from_storage(self, ds, indexer, chunks, out_shape, out_dtype, compressor, filters, drop_axes):
         method = self.method
+       
         if method is not None:
             out = []
             counts = []
         else:
-            out = np.empty(out_shape, dtype=out_dtype, order=self.zds._order)
+            out = np.empty(out_shape, dtype=out_dtype, order=ds.order)
             counts = None  # should never get touched with no method!
 
         # Create a shared session object.
-        if self.storage_type == "s3":
+        if self.storage_type == "s3" and self._version==2:
             if self.storage_options is not None:
                 key, secret = None, None
                 if "key" in self.storage_options:
@@ -367,16 +358,26 @@ class Active:
             session = None
 
         # Process storage chunks using a thread pool.
+        # Because we do this, we need to read the dataset b-tree now, not as we go, so
+        # it is already in cache. If we remove the thread pool from here, we probably
+        # wouldn't need to do it before the first one.
+        
+        if ds.chunks is not None:
+            t1 = time.time()
+            ds._get_chunk_addresses()
+            t2 = time.time() - t1
+            self.metric_data['indexing time (s)'] = t2
+            self.metric_data['chunk number'] = len(ds._zchunk_index)
+        chunk_count = 0
+        t1 = time.time()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_threads) as executor:
             futures = []
             # Submit chunks for processing.
-            for chunk_coords, chunk_selection, out_selection in stripped_indexer:
+            for chunk_coords, chunk_selection, out_selection in indexer:
                 future = executor.submit(
                     self._process_chunk,
-                    session, fsref, chunk_coords, chunk_selection,
-                    counts, out_selection,
-                    compressor, filters, missing,
-                    drop_axes=drop_axes)
+                    session,  ds, chunks, chunk_coords, chunk_selection,
+                    counts, out_selection, compressor, filters, drop_axes=drop_axes)
                 futures.append(future)
             # Wait for completion.
             for future in concurrent.futures.as_completed(futures):
@@ -385,6 +386,7 @@ class Active:
                 except Exception as exc:
                     raise
                 else:
+                    chunk_count +=1
                     if method is not None:
                         result, count = result
                         out.append(result)
@@ -430,6 +432,10 @@ class Active:
                     # size.
                     out = out / np.sum(counts).reshape(shape1)
 
+        t2 = time.time()
+        self.metric_data['reduction time (s)'] = t2-t1
+        self.metric_data['chunks processed'] = chunk_count
+        self.metric_data['storage read (B)'] = self.data_read
         return out
 
     def _get_endpoint_url(self):
@@ -446,9 +452,8 @@ class Active:
 
         return f"http://{urllib.parse.urlparse(self.filename).netloc}"
 
-    def _process_chunk(self, session, fsref, chunk_coords, chunk_selection, counts,
-                       out_selection, compressor, filters, missing, 
-                       drop_axes=None):
+    def _process_chunk(self, session, ds, chunks, chunk_coords, chunk_selection, counts,
+                       out_selection, compressor, filters, drop_axes=None):
         """
         Obtain part or whole of a chunk.
 
@@ -456,37 +461,45 @@ class Active:
         the output array.
 
         Note the need to use counts for some methods
+        #FIXME: Do, we, it's not actually used?
 
         """
-        coord = '.'.join([str(c) for c in chunk_coords])
-        key = f"{self.ncvar}/{coord}"
-        rfile, offset, size = tuple(fsref[key])
+        
+        offset, size, filter_mask = ds.get_chunk_details(chunk_coords)
+        self.data_read += size
 
-        # S3: pass in pre-configured storage options (credentials)
-        if self.storage_type == "s3":
-            print("S3 rfile is:", rfile)
-            parsed_url = urllib.parse.urlparse(rfile)
+        if self.storage_type == 's3' and self._version == 1:
+
+            tmp, count = reduce_opens3_chunk(ds.fh, offset, size, compressor, filters,
+                            self.missing, ds.dtype,
+                            chunks, ds.order,
+                            chunk_selection, method=self.method
+            )
+
+        elif self.storage_type == "s3" and self._version==2:
+            # S3: pass in pre-configured storage options (credentials)
+            # print("S3 rfile is:", self.filename)
+            parsed_url = urllib.parse.urlparse(self.filename)
             bucket = parsed_url.netloc
             object = parsed_url.path
-            # FIXME: We do not get the correct byte order on the Zarr Array's dtype
-            # when using S3, so use the value captured earlier.
-            dtype = self._dtype
+        
             # for certain S3 servers rfile needs to contain the bucket eg "bucket/filename"
             # as a result the parser above finds empty string bucket
             if bucket == "":
                 bucket = os.path.dirname(object)
                 object = os.path.basename(object)
-            print("S3 bucket:", bucket)
-            print("S3 file:", object)
+            # print("S3 bucket:", bucket)
+            # print("S3 file:", object)
             if self.storage_options is None:
+                # for the moment we need to force ds.dtype to be a numpy type
                 tmp, count = reductionist.reduce_chunk(session,
                                                        S3_ACTIVE_STORAGE_URL,
                                                        S3_URL,
                                                        bucket, object, offset,
                                                        size, compressor, filters,
-                                                       missing, dtype,
-                                                       self.zds._chunks,
-                                                       self.zds._order,
+                                                       self.missing, np.dtype(ds.dtype),
+                                                       chunks,
+                                                       ds.order,
                                                        chunk_selection,
                                                        operation=self._method)
             else:
@@ -503,47 +516,39 @@ class Active:
                                                        self._get_endpoint_url(),
                                                        bucket, object, offset,
                                                        size, compressor, filters,
-                                                       missing, dtype,
-                                                       self.zds._chunks,
-                                                       self.zds._order,
+                                                       self.missing, np.dtype(ds.dtype),
+                                                       chunks,
+                                                       ds.order,
                                                        chunk_selection,
                                                        operation=self._method)
+        elif self.storage_type=='ActivePosix' and self.version==2:
+            # This is where the DDN Fuse and Infinia wrappers go
+            raise NotImplementedError
         else:
             # note there is an ongoing discussion about this interface, and what it returns
             # see https://github.com/valeriupredoi/PyActiveStorage/issues/33
             # so neither the returned data or the interface should be considered stable
             # although we will version changes.
-            tmp, count = reduce_chunk(rfile, offset, size, compressor, filters,
-                                      missing, self.zds._dtype,
-                                      self.zds._chunks, self.zds._order,
+            tmp, count = reduce_chunk(self.filename, offset, size, compressor, filters,
+                                      self.missing, ds.dtype,
+                                      chunks, ds.order,
                                       chunk_selection, method=self.method)
 
         if self.method is not None:
-            return tmp, count
+            return tmp, count 
         else:
             if drop_axes:
                 tmp = np.squeeze(tmp, axis=drop_axes)
-            return tmp, out_selection
+            return tmp, out_selection 
 
-    def _mask_data(self, data, ds_var):
-        """ppp"""
-        # TODO: replace with cfdm.NetCDFIndexer, hopefully.
-        attrs = ds_var.attrs
-        missing_value = attrs.get('missing_value')
-        _FillValue = attrs.get('_FillValue')
-        valid_min = attrs.get('valid_min')
-        valid_max = attrs.get('valid_max')
-        valid_range = attrs.get('valid_range')
-
-        if valid_max is not None or valid_min is not None:
-            if valid_range is not None:
-                raise ValueError(
-                    "Invalid combination in the file of valid_min, "
-                    "valid_max, valid_range: "
-                    f"{valid_min}, {valid_max}, {valid_range}"
-                )
-        elif valid_range is not None:
-            valid_min, valid_max = valid_range
+    def _mask_data(self, data):
+        """ 
+        Missing values obtained at initial getitem, and are used here to 
+        mask data, if necessary
+        """
+        if self.missing is None:
+            self.missing = self.__get_missing_attributes()
+        _FillValue, missing_value, valid_min, valid_max = self.missing
         
         if _FillValue is not None:
             data = np.ma.masked_equal(data, _FillValue)

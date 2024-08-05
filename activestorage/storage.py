@@ -3,7 +3,9 @@ import numpy as np
 
 from numcodecs.compat import ensure_ndarray
 
-def reduce_chunk(rfile, offset, size, compression, filters, missing, dtype, shape, order, chunk_selection, method=None):
+def reduce_chunk(rfile, 
+                 offset, size, compression, filters, missing, dtype, shape, 
+                 order, chunk_selection, method=None):
     """ We do our own read of chunks and decoding etc 
     
     rfile - the actual file with the data 
@@ -42,11 +44,12 @@ def reduce_chunk(rfile, offset, size, compression, filters, missing, dtype, shap
     if method:
         if missing != (None, None, None, None):
             tmp = remove_missing(tmp, missing)
-        # check on size of tmp; method(empty) returns nan
-        if tmp.any():
+        # Check on size of tmp; method(empty) fails or gives incorrect
+        # results
+        if tmp.size:
             return method(tmp), tmp.size
         else:
-            return tmp, None
+            return tmp, 0
     else:
         return tmp, None
 
@@ -98,3 +101,36 @@ def read_block(open_file, offset, size):
     data = open_file.read(size)
     open_file.seek(place)
     return data
+
+
+def reduce_opens3_chunk(fh, 
+        offset, size, compression, filters, missing, dtype, shape, 
+        order, chunk_selection, method=None):
+    """ 
+    Same function as reduce_chunk, but this mimics what is done
+    deep in the bowels of H5py/pyfive. The reason for doing this is
+    so we can get per chunk metrics
+    """
+    fh.seek(offset)
+    chunk_buffer = fh.read(size)
+    chunk = filter_pipeline(chunk_buffer, compression, filters)
+    # make it a numpy array of bytes
+    chunk = ensure_ndarray(chunk)
+    # convert to the appropriate data type
+    chunk = chunk.view(dtype)
+    # sort out ordering and convert to the parent hyperslab dimensions
+    chunk = chunk.reshape(-1, order='A')
+    chunk = chunk.reshape(shape, order=order)
+
+    tmp = chunk[chunk_selection]
+    if method:
+        if missing != (None, None, None, None):
+            tmp = remove_missing(tmp, missing)
+        # check on size of tmp; method(empty) returns nan
+        if tmp.any():
+            return method(tmp), tmp.size
+        else:
+            return tmp, None
+    else:
+        return tmp, None
+

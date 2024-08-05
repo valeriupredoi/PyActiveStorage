@@ -4,10 +4,8 @@ import s3fs
 import ujson
 
 from pathlib import Path
-from kerchunk.hdf import SingleHdf5ToZarr
 
 from activestorage.active import Active
-from activestorage.netcdf_to_zarr import open_zarr_group
 from config_minio import *
 
 
@@ -17,6 +15,7 @@ def test_data_path():
     return Path(__file__).resolve().parent / 'test_data'
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_s3_SingleHdf5ToZarr():
     """Check Kerchunk's SingleHdf5ToZarr when S3."""
     # SingleHdf5ToZarr is VERY quick and MEM-light
@@ -33,6 +32,7 @@ def test_s3_SingleHdf5ToZarr():
                                     inline_threshold=0)
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_local_SingleHdf5ToZarr(test_data_path):
     """Check Kerchunk's SingleHdf5ToZarr when NO S3."""
     # SingleHdf5ToZarr is VERY quick and MEM-light
@@ -44,6 +44,7 @@ def test_local_SingleHdf5ToZarr(test_data_path):
                                     inline_threshold=0)
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_s3_kerchunk_to_json():
     """Check Kerchunk's SingleHdf5ToZarr dumped to JSON, when S3."""
     s3_file = "s3://pyactivestorage/s3_test_bizarre_large.nc"
@@ -64,6 +65,7 @@ def test_s3_kerchunk_to_json():
             f.write(ujson.dumps(h5chunks.translate()).encode())
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_local_kerchunk_to_json(test_data_path):
     """Check Kerchunk's SingleHdf5ToZarr dumped to JSON, when NO S3."""
     local_file = str(test_data_path / "test_bizarre.nc")
@@ -78,6 +80,7 @@ def test_local_kerchunk_to_json(test_data_path):
             f.write(ujson.dumps(h5chunks.translate()).encode())
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_s3_kerchunk_openZarrGroup():
     """Check Kerchunk's SingleHdf5ToZarr dumped to JSON, when S3."""
     s3_file = "s3://pyactivestorage/s3_test_bizarre_large.nc"
@@ -99,6 +102,7 @@ def test_s3_kerchunk_openZarrGroup():
     ref_ds = open_zarr_group(outf, "data")
 
 
+@pytest.mark.xfail(reason="Pyfive don't use Kerchunk")
 def test_local_kerchunk_openZarrGroup(test_data_path):
     """Check Kerchunk's SingleHdf5ToZarr dumped to JSON, when NO S3."""
     local_file = str(test_data_path / "test_bizarre.nc")

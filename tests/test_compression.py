@@ -16,9 +16,9 @@ def check_dataset_filters(temp_file: str, ncvar: str, compression: str, shuffle:
     # Sanity check that test data is compressed and filtered as expected.
     if USE_S3:
         with load_from_s3(temp_file) as test_data:
-            # NOTE: h5netcdf thinks zlib is gzip
-            assert test_data.variables[ncvar].compression == "gzip"
-            assert test_data.variables[ncvar].shuffle == shuffle
+            print("File attrs", test_data.attrs)
+            assert test_data[ncvar].compression == "gzip"
+            assert test_data[ncvar].shuffle == shuffle
     else:
         with Dataset(temp_file) as test_data:
             test_data_filters = test_data.variables[ncvar].filters()
@@ -91,6 +91,10 @@ def test_compression_and_filters_cmip6_data(storage_options, active_storage_url)
 
     check_dataset_filters(test_file, "tas", "zlib", False)
 
+    print("Test file and storage options", test_file, storage_options)
+    if not utils.get_storage_type():
+        storage_options = None
+        active_storage_url = None
     active = Active(test_file, 'tas', utils.get_storage_type(),
                     storage_options=storage_options,
                     active_storage_url=active_storage_url)
@@ -117,6 +121,10 @@ def test_compression_and_filters_obs4mips_data(storage_options, active_storage_u
 
     check_dataset_filters(test_file, "rlut", "zlib", False)
 
+    print("Test file and storage options", test_file, storage_options)
+    if not utils.get_storage_type():
+        storage_options = None
+        active_storage_url = None
     active = Active(test_file, 'rlut', utils.get_storage_type(),
                     storage_options=storage_options,
                     active_storage_url=active_storage_url)

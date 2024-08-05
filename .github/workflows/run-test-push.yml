@@ -30,6 +30,14 @@ jobs:
           use-mamba: true
       - run: conda --version
       - run: python -V
+      - name: Install development version of bnlawrence/Pyfive:issue60
+        run: |
+          cd ..
+          git clone https://github.com/bnlawrence/pyfive.git
+          cd pyfive
+          git checkout issue60
+          pip install -e .
       - run: pip install -e .
+      - run: conda list
       - run: pytest -n 2 --junitxml=report-1.xml
       - uses: codecov/codecov-action@v3

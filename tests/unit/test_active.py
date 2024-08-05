@@ -81,6 +81,7 @@ def test_active():
     init = active.__init__(uri=uri, ncvar=ncvar)
 
 
+@pytest.mark.xfail(reason="We don't employ locks with Pyfive anymore, yet.")
 def test_lock():
     """Unit test for class:Active."""
     uri = "tests/test_data/cesm2_native.nc"

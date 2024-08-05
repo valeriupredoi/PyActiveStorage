@@ -9,6 +9,8 @@ import numpy as np
 import sys
 import typing
 
+DEBUG = 0
+
 
 def get_session(username: str, password: str, cacert: typing.Optional[str]) -> requests.Session:
     """Create and return a client session object.
@@ -53,7 +55,8 @@ def reduce_chunk(session, server, source, bucket, object,
     """
 
     request_data = build_request_data(source, bucket, object, offset, size, compression, filters, missing, dtype, shape, order, chunk_selection)
-    print("Reductionist request data dictionary:", request_data)
+    if DEBUG:
+        print(f"Reductionist request data dictionary: {request_data}")
     api_operation = "sum" if operation == "mean" else operation or "select"
     url = f'{server}/v1/{api_operation}/'
     response = request(session, url, request_data)
@@ -116,6 +119,8 @@ def encode_missing(missing):
     if missing_value:
         if isinstance(missing_value, collections.abc.Sequence):
             return {"missing_values": [encode_dvalue(v) for v in missing_value]}
+        elif isinstance(missing_value, np.ndarray):
+            return {"missing_values": [encode_dvalue(v) for v in missing_value]}
         else:
             return {"missing_value": encode_dvalue(missing_value)}
     if valid_min and valid_max:
@@ -137,8 +142,8 @@ def build_request_data(source: str, bucket: str, object: str, offset: int,
         'object': object,
         'dtype': dtype.name,
         'byte_order': encode_byte_order(dtype),
-        'offset': offset,
-        'size': size,
+        'offset': int(offset),
+        'size': int(size),
         'order': order,
     }
     if shape:

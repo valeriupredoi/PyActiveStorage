@@ -60,7 +60,7 @@ def test_reduced_chunk_fully_masked_data_fill():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_missing():
@@ -79,7 +79,7 @@ def test_reduced_chunk_fully_masked_data_missing():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_vmin():
@@ -98,7 +98,7 @@ def test_reduced_chunk_fully_masked_data_vmin():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
 
 
 def test_reduced_chunk_fully_masked_data_vmax():
@@ -117,4 +117,23 @@ def test_reduced_chunk_fully_masked_data_vmax():
                          order="C", chunk_selection=ch_sel,
                          method=np.mean)
     assert rc[0].size == 0
-    assert rc[1] is None
+    assert rc[1] == 0
+
+
+def test_zero_data():
+    """Test method with zero data."""
+    rfile = "tests/test_data/zero_chunked.nc"
+    offset = 8760
+    size = 48
+
+    # no compression
+    ch_sel = (slice(0, 3, 1), slice(0, 4, 1))
+    rc = st.reduce_chunk(rfile, offset, size,
+                         compression=None, filters=None,
+                         missing=(None, None, None, None),
+                         dtype="float32", shape=(3, 4),
+                         order="C", chunk_selection=ch_sel,
+                         method=np.mean)
+    assert rc[0].size == 1
+    assert rc[0] == 0
+    assert rc[1] is 12

@@ -36,8 +36,8 @@ def test_reduce_chunk_defaults(mock_request):
     s3_url = "https://active.example.com"
     bucket = "fake-bucket"
     object = "fake-object"
-    offset = None
-    size = None
+    offset = 0
+    size = 0
     compression = None
     filters = None
     missing = (None, None, None, None)
@@ -67,6 +67,8 @@ def test_reduce_chunk_defaults(mock_request):
         "bucket": bucket,
         "object": object,
         "dtype": "int32",
+        'offset':0,
+        'size':0,
         "byte_order": sys.byteorder,
     }
     mock_request.assert_called_once_with(session, expected_url, expected_data)

@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main  # keep this at all times
+      - pyfive
   pull_request:
   schedule:
     - cron: '0 0 * * *'  # nightly
@@ -57,6 +58,13 @@ jobs:
           miniforge-version: "latest"
           miniforge-variant: Mambaforge
           use-mamba: true
+      - name: Install development version of bnlawrence/Pyfive:issue60
+        run: |
+          cd ..
+          git clone https://github.com/bnlawrence/pyfive.git
+          cd pyfive
+          git checkout issue60
+          pip install -e .
       - name: Install PyActiveStorage
         run: |
           conda --version
